@@ -5,6 +5,7 @@ from node.raft_node import RaftNode,NodeState
 from node.models import RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse
 import logging
 import time
+from fastapi import HTTPException
 
 
 logging.basicConfig(level=logging.INFO)
@@ -50,7 +51,7 @@ async def heartbeat_loop():
 async def start_background_tasks():
     asyncio.create_task(election_timer_loop())
     asyncio.create_task(heartbeat_loop())
-    
+
 async def election_timer_loop():
     while True:
         timeout = raft.random_election_timeout()
@@ -64,3 +65,25 @@ async def election_timer_loop():
             await raft.start_election()
         # else: a heartbeat (or vote grant) arrived during our sleep — 
         # loop back and wait a fresh random timeout instead of electing
+
+@app.post("/kv/{key}")
+async def set_key(key: str, value: dict):
+    if raft.state.value != "leader":
+        raise HTTPException(status_code=421, detail="Not the leader — retry another node")
+    success = await raft.client_write("SET", key, value["value"])
+    return {"success": success}
+
+
+@app.get("/kv/{key}")
+def get_key(key: str):
+    if key not in raft.state_machine:
+        raise HTTPException(status_code=404, detail="Key not found")
+    return {"key": key, "value": raft.state_machine[key]}
+
+
+@app.delete("/kv/{key}")
+async def delete_key(key: str):
+    if raft.state.value != "leader":
+        raise HTTPException(status_code=421, detail="Not the leader — retry another node")
+    success = await raft.client_write("DELETE", key)
+    return {"success": success}

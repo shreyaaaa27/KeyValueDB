@@ -37,6 +37,8 @@ class RaftNode:
         self.next_index: dict[str, int] = {}
         self.match_index: dict[str, int] = {}
         self.last_heartbeat_received = time.monotonic()
+        self.state_machine: dict[str, str] = {}
+
 
     def random_election_timeout(self) -> float:
         # Randomized so all nodes don't call an election simultaneously
@@ -126,23 +128,76 @@ class RaftNode:
         # Update commit index (capped at our own log length) — full logic Day 14
         if req.leader_commit > self.commit_index:
             self.commit_index = min(req.leader_commit, len(self.log))
+            self.apply_committed_entries()
 
         return self.current_term, True
 
     async def send_heartbeats(self):
-        """Called repeatedly while this node is leader."""
-        request_base = {
-            "term": self.current_term,
-            "leader_id": self.node_id,
-            "entries": [],
-            "leader_commit": self.commit_index,
-        }
+        """Called on a timer (empty entries = pure heartbeat) and after client writes (real entries)."""
         async with httpx.AsyncClient(timeout=1.0) as client:
             tasks = []
+            peer_info = []
+
             for peer in self.peers:
                 next_idx = self.next_index.get(peer, len(self.log) + 1)
                 prev_log_index = next_idx - 1
-                prev_log_term = self.log[prev_log_index - 1].term if prev_log_index > 0 and prev_log_index <= len(self.log) else 0
-                payload = {**request_base, "prev_log_index": prev_log_index, "prev_log_term": prev_log_term}
+                prev_log_term = self.log[prev_log_index - 1].term if 0 < prev_log_index <= len(self.log) else 0
+                entries_to_send = self.log[prev_log_index:]  # everything the follower is missing
+
+                payload = {
+                    "term": self.current_term,
+                    "leader_id": self.node_id,
+                    "prev_log_index": prev_log_index,
+                    "prev_log_term": prev_log_term,
+                    "entries": [e.model_dump() for e in entries_to_send],
+                    "leader_commit": self.commit_index,
+                }
                 tasks.append(client.post(f"{peer}/append_entries", json=payload))
-            await asyncio.gather(*tasks, return_exceptions=True)        
+                peer_info.append((peer, prev_log_index, len(entries_to_send)))
+
+            responses = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for (peer, prev_log_index, num_sent), resp in zip(peer_info, responses):
+            if isinstance(resp, Exception):
+                continue  # peer unreachable, leave next_index/match_index unchanged, retry next round
+            data = resp.json()
+            if data.get("success"):
+                self.match_index[peer] = prev_log_index + num_sent
+                self.next_index[peer] = self.match_index[peer] + 1
+            else:
+                # follower rejected — back off next_index by 1 and retry earlier next round
+                self.next_index[peer] = max(1, self.next_index.get(peer, len(self.log) + 1) - 1)  
+
+    def apply_committed_entries(self):
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            entry = self.log[self.last_applied - 1]
+            cmd = entry.command
+            if cmd["op"] == "SET":
+                self.state_machine[cmd["key"]] = cmd["value"]
+            elif cmd["op"] == "DELETE":
+                self.state_machine.pop(cmd["key"], None)
+
+    def advance_commit_index_if_majority(self):
+        """Leader-only: find the highest index replicated on a majority."""
+        if self.state != NodeState.LEADER:
+            return
+        majority = (len(self.peers) + 1) // 2 + 1
+        for index in range(len(self.log), self.commit_index, -1):
+            count = 1  # leader itself
+            for peer in self.peers:
+                if self.match_index.get(peer, 0) >= index:
+                    count += 1
+            if count >= majority and self.log[index - 1].term == self.current_term:
+                self.commit_index = index
+                break
+        self.apply_committed_entries()
+
+    async def client_write(self, op: str, key: str, value: str = None) -> bool:
+        if self.state != NodeState.LEADER:
+            return False
+        entry = LogEntry(term=self.current_term, command={"op": op, "key": key, "value": value})
+        self.log.append(entry)
+        await self.send_heartbeats()          # now actually replicates the new entry
+        self.advance_commit_index_if_majority()  # now has real match_index data to work with
+        return True             
