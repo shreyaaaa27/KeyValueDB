@@ -1,7 +1,13 @@
 from fastapi import FastAPI
 import os
-from node.raft_node import RaftNode
+import asyncio
+from node.raft_node import RaftNode,NodeState
 from node.models import RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse
+import logging
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 NODE_ID = os.getenv("NODE_ID", "node1")
 PEERS = os.getenv("PEERS", "").split(",") if os.getenv("PEERS") else []
@@ -22,9 +28,25 @@ def status():
 
 @app.post("/request_vote", response_model=RequestVoteResponse)
 def request_vote(req: RequestVoteRequest):
-    raise NotImplementedError  # Day 12
-
+    term, granted = raft.handle_request_vote(req)
+    return RequestVoteResponse(term=term, vote_granted=granted)
 
 @app.post("/append_entries", response_model=AppendEntriesResponse)
 def append_entries(req: AppendEntriesRequest):
-    raise NotImplementedError  # Day 13
+    term, success = raft.handle_append_entries(req)
+    return AppendEntriesResponse(term=term, success=success)
+
+
+@app.on_event("startup")
+async def start_background_tasks():
+    asyncio.create_task(election_timer_loop())
+
+
+async def election_timer_loop():
+    while True:
+        try:
+            await asyncio.sleep(raft.random_election_timeout())
+            if raft.state != NodeState.LEADER:
+                await raft.start_election()
+        except Exception:
+            logger.exception("election_timer_loop crashed")

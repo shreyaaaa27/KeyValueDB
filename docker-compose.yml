@@ -6,6 +6,8 @@ services:
       - PEERS=http://node2:8000,http://node3:8000
     ports:
       - "8001:8000"
+    volumes:
+      - .:/app
 
   node2:
     build: .
@@ -14,6 +16,8 @@ services:
       - PEERS=http://node1:8000,http://node3:8000
     ports:
       - "8002:8000"
+    volumes:
+      - .:/app
 
   node3:
     build: .
@@ -22,3 +26,5 @@ services:
       - PEERS=http://node1:8000,http://node2:8000
     ports:
       - "8003:8000"
+    volumes:
+      - .:/app
