@@ -4,6 +4,7 @@ from node.models import LogEntry
 import asyncio
 import httpx
 from node.models import RequestVoteRequest
+import time
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -35,6 +36,7 @@ class RaftNode:
         # Leader-only state (reset on becoming leader)
         self.next_index: dict[str, int] = {}
         self.match_index: dict[str, int] = {}
+        self.last_heartbeat_received = time.monotonic()
 
     def random_election_timeout(self) -> float:
         # Randomized so all nodes don't call an election simultaneously
@@ -63,6 +65,7 @@ class RaftNode:
 
         if (self.voted_for is None or self.voted_for == req.candidate_id) and log_ok:
             self.voted_for = req.candidate_id
+            self.last_heartbeat_received = time.monotonic()
             return self.current_term, True
 
         return self.current_term, False
@@ -99,3 +102,47 @@ class RaftNode:
         if votes >= majority and self.state == NodeState.CANDIDATE:
             self.state = NodeState.LEADER
             print(f"[{self.node_id}] Elected leader for term {self.current_term} with {votes} votes")
+
+
+    def handle_append_entries(self, req) -> tuple[int, bool]:
+        if req.term < self.current_term:
+            return self.current_term, False
+
+        # Valid leader contact — reset to follower and remember we heard from them
+        self.current_term = req.term
+        self.state = NodeState.FOLLOWER
+        self.last_heartbeat_received = time.monotonic()
+        # Consistency check
+        if req.prev_log_index > 0:
+            if len(self.log) < req.prev_log_index:
+                return self.current_term, False
+            if self.log[req.prev_log_index - 1].term != req.prev_log_term:
+                return self.current_term, False
+
+        # Append new entries (overwrite conflicts, if any)
+        if req.entries:
+            self.log = self.log[:req.prev_log_index] + req.entries
+
+        # Update commit index (capped at our own log length) — full logic Day 14
+        if req.leader_commit > self.commit_index:
+            self.commit_index = min(req.leader_commit, len(self.log))
+
+        return self.current_term, True
+
+    async def send_heartbeats(self):
+        """Called repeatedly while this node is leader."""
+        request_base = {
+            "term": self.current_term,
+            "leader_id": self.node_id,
+            "entries": [],
+            "leader_commit": self.commit_index,
+        }
+        async with httpx.AsyncClient(timeout=1.0) as client:
+            tasks = []
+            for peer in self.peers:
+                next_idx = self.next_index.get(peer, len(self.log) + 1)
+                prev_log_index = next_idx - 1
+                prev_log_term = self.log[prev_log_index - 1].term if prev_log_index > 0 and prev_log_index <= len(self.log) else 0
+                payload = {**request_base, "prev_log_index": prev_log_index, "prev_log_term": prev_log_term}
+                tasks.append(client.post(f"{peer}/append_entries", json=payload))
+            await asyncio.gather(*tasks, return_exceptions=True)        

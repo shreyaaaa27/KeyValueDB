@@ -4,6 +4,8 @@ import asyncio
 from node.raft_node import RaftNode,NodeState
 from node.models import RequestVoteRequest, RequestVoteResponse, AppendEntriesRequest, AppendEntriesResponse
 import logging
+import time
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -37,16 +39,28 @@ def append_entries(req: AppendEntriesRequest):
     return AppendEntriesResponse(term=term, success=success)
 
 
+async def heartbeat_loop():
+    while True:
+        if raft.state == NodeState.LEADER:
+            await raft.send_heartbeats()
+        await asyncio.sleep(0.5)  # heartbeat every 500ms — well under the election timeout
+
+
 @app.on_event("startup")
 async def start_background_tasks():
     asyncio.create_task(election_timer_loop())
-
-
+    asyncio.create_task(heartbeat_loop())
+    
 async def election_timer_loop():
     while True:
-        try:
-            await asyncio.sleep(raft.random_election_timeout())
-            if raft.state != NodeState.LEADER:
-                await raft.start_election()
-        except Exception:
-            logger.exception("election_timer_loop crashed")
+        timeout = raft.random_election_timeout()
+        await asyncio.sleep(timeout)
+
+        if raft.state == NodeState.LEADER:
+            continue  # leaders don't run elections on themselves
+
+        elapsed = time.monotonic() - raft.last_heartbeat_received
+        if elapsed >= timeout:
+            await raft.start_election()
+        # else: a heartbeat (or vote grant) arrived during our sleep — 
+        # loop back and wait a fresh random timeout instead of electing
