@@ -1,3 +1,20 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment / System
 .env
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
