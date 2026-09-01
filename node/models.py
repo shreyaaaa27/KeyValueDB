@@ -22,6 +22,7 @@ class RequestVoteResponse(BaseModel):
 class AppendEntriesRequest(BaseModel):
     term: int
     leader_id: str
+    leader_address: str  # NEW
     prev_log_index: int
     prev_log_term: int
     entries: list[LogEntry]

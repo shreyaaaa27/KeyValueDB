@@ -16,8 +16,8 @@ NODE_ID = os.getenv("NODE_ID", "node1")
 PEERS = os.getenv("PEERS", "").split(",") if os.getenv("PEERS") else []
 
 app = FastAPI(title=f"KeyValueDB - {NODE_ID}")
-raft = RaftNode(NODE_ID, PEERS)
-
+NODE_ADDRESS = f"http://{NODE_ID}:8000"
+raft = RaftNode(NODE_ID, PEERS, address=NODE_ADDRESS)
 
 @app.get("/status")
 def status():
@@ -69,7 +69,10 @@ async def election_timer_loop():
 @app.post("/kv/{key}")
 async def set_key(key: str, value: dict):
     if raft.state.value != "leader":
-        raise HTTPException(status_code=421, detail="Not the leader — retry another node")
+        raise HTTPException(
+            status_code=421,
+            detail={"message": "Not the leader", "leader_address": raft.leader_address},
+        )
     success = await raft.client_write("SET", key, value["value"])
     return {"success": success}
 
@@ -84,6 +87,9 @@ def get_key(key: str):
 @app.delete("/kv/{key}")
 async def delete_key(key: str):
     if raft.state.value != "leader":
-        raise HTTPException(status_code=421, detail="Not the leader — retry another node")
+        raise HTTPException(
+            status_code=421,
+            detail={"message": "Not the leader", "leader_address": raft.leader_address},
+        )
     success = await raft.client_write("DELETE", key)
     return {"success": success}

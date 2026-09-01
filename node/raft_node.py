@@ -19,11 +19,12 @@ class NodeState(Enum):
 
 
 class RaftNode:
-    def __init__(self, node_id: str, peers: list[str]):
+    def __init__(self, node_id: str, peers: list[str], address: str = ""):        
         self.node_id = node_id
         self.peers = peers  # e.g. ["http://node2:8000", "http://node3:8000"]
 
         # Persistent state (would survive a restart in a real system)
+        self.address = address or f"http://{node_id}:8000"        
         self.current_term = 0
         self.voted_for: str | None = None
         self.log: list[LogEntry] = []
@@ -38,6 +39,8 @@ class RaftNode:
         self.match_index: dict[str, int] = {}
         self.last_heartbeat_received = time.monotonic()
         self.state_machine: dict[str, str] = {}
+        self.leader_id: str | None = None
+        self.leader_address: str | None = None  # e.g. "http://node2:8000"
 
 
     def random_election_timeout(self) -> float:
@@ -103,8 +106,9 @@ class RaftNode:
         majority = (len(self.peers) + 1) // 2 + 1
         if votes >= majority and self.state == NodeState.CANDIDATE:
             self.state = NodeState.LEADER
+            self.leader_id = self.node_id
+            self.leader_address = self.address  # Point to self
             print(f"[{self.node_id}] Elected leader for term {self.current_term} with {votes} votes")
-
 
     def handle_append_entries(self, req) -> tuple[int, bool]:
         if req.term < self.current_term:
@@ -114,6 +118,11 @@ class RaftNode:
         self.current_term = req.term
         self.state = NodeState.FOLLOWER
         self.last_heartbeat_received = time.monotonic()
+        self.leader_id = req.leader_id
+
+        if hasattr(req, "leader_address"):
+            self.leader_address = req.leader_address
+
         # Consistency check
         if req.prev_log_index > 0:
             if len(self.log) < req.prev_log_index:
@@ -147,6 +156,7 @@ class RaftNode:
                 payload = {
                     "term": self.current_term,
                     "leader_id": self.node_id,
+                    "leader_address": self.address,
                     "prev_log_index": prev_log_index,
                     "prev_log_term": prev_log_term,
                     "entries": [e.model_dump() for e in entries_to_send],
