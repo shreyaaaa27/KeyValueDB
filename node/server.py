@@ -19,6 +19,7 @@ app = FastAPI(title=f"KeyValueDB - {NODE_ID}")
 NODE_ADDRESS = f"http://{NODE_ID}:8000"
 raft = RaftNode(NODE_ID, PEERS, address=NODE_ADDRESS)
 
+
 @app.get("/status")
 def status():
     return {
@@ -87,9 +88,6 @@ def get_key(key: str):
 @app.delete("/kv/{key}")
 async def delete_key(key: str):
     if raft.state.value != "leader":
-        raise HTTPException(
-            status_code=421,
-            detail={"message": "Not the leader", "leader_address": raft.leader_address},
-        )
+        raise HTTPException(status_code=421, detail="Not the leader — retry another node")
     success = await raft.client_write("DELETE", key)
     return {"success": success}
