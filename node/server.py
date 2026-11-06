@@ -75,6 +75,8 @@ async def set_key(key: str, value: dict):
             detail={"message": "Not the leader", "leader_address": raft.leader_address},
         )
     success = await raft.client_write("SET", key, value["value"])
+    if not success:
+        raise HTTPException(status_code=503, detail="No majority - write not committed")
     return {"success": success}
 
 
@@ -90,4 +92,6 @@ async def delete_key(key: str):
     if raft.state.value != "leader":
         raise HTTPException(status_code=421, detail="Not the leader — retry another node")
     success = await raft.client_write("DELETE", key)
+    if not success:
+        raise HTTPException(status_code=503, detail="No majority - write not committed")
     return {"success": success}

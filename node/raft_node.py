@@ -208,6 +208,7 @@ class RaftNode:
             return False
         entry = LogEntry(term=self.current_term, command={"op": op, "key": key, "value": value})
         self.log.append(entry)
+        index = len(self.log)                 # position of this new entry
         await self.send_heartbeats()          # now actually replicates the new entry
         self.advance_commit_index_if_majority()  # now has real match_index data to work with
-        return True             
+        return self.commit_index >= index     # True only if a majority stored it             
